@@ -28,7 +28,8 @@ interface PendingEdge {
 }
 
 function edgePath(x1: number, y1: number, x2: number, y2: number) {
-  return `M ${x1} ${y1} L ${x2} ${y2}`;
+  const cx = Math.abs(x2 - x1) * 0.5;
+  return `M ${x1} ${y1} C ${x1 + cx} ${y1}, ${x2 - cx} ${y2}, ${x2} ${y2}`;
 }
 
 export function Canvas() {
