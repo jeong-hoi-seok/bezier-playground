@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-export type NodeType = "text";
+export type NodeType = "text" | "output";
 
 export interface NoteNode {
   id: string;
@@ -33,11 +33,12 @@ interface VisualNoteStore {
   zoom: number;
   offset: { x: number; y: number };
   logs: LogEntry[];
-  addNode: (x: number, y: number) => void;
+  addNode: (x: number, y: number, type?: NodeType) => void;
   moveNode: (id: string, x: number, y: number) => void;
   removeNode: (id: string) => void;
   addEdge: (sourceId: string, targetId: string) => void;
   removeEdge: (id: string) => void;
+  runGraph: () => void;
   setZoom: (zoom: number) => void;
   setOffset: (x: number, y: number) => void;
 }
@@ -58,13 +59,13 @@ export const useVisualNoteStore = create<VisualNoteStore>((set) => ({
   offset: { x: 0, y: 0 },
   logs: [],
 
-  addNode: (x, y) =>
+  addNode: (x, y, type = "text") =>
     set((s) => {
       const id = `node-${++idCounter}`;
-      const label = `Note ${idCounter}`;
+      const label = type === "output" ? `Output ${idCounter}` : `Note ${idCounter}`;
       return {
-        nodes: [...s.nodes, { id, type: "text", x, y, label }],
-        logs: [...s.logs, mkLog("success", `[node:added] id=${id} label="${label}" x=${Math.round(x)} y=${Math.round(y)}`)],
+        nodes: [...s.nodes, { id, type, x, y, label }],
+        logs: [...s.logs, mkLog("success", `[node:added] id=${id} type=${type} label="${label}" x=${Math.round(x)} y=${Math.round(y)}`)],
       };
     }),
 
@@ -101,6 +102,48 @@ export const useVisualNoteStore = create<VisualNoteStore>((set) => ({
       edges: s.edges.filter((e) => e.id !== id),
       logs: [...s.logs, mkLog("warn", `[edge:removed] id=${id}`)],
     })),
+
+  runGraph: () =>
+    set((s) => {
+      const newLogs: LogEntry[] = [mkLog("info", "[run:start] ── 실행 시작 ──")];
+
+      const outputNodes = s.nodes.filter((n) => n.type === "output");
+      if (outputNodes.length === 0) {
+        newLogs.push(mkLog("warn", "[run:error] 출력 노드가 없습니다. Output 노드를 추가하세요."));
+        return { logs: [...s.logs, ...newLogs] };
+      }
+
+      for (const outNode of outputNodes) {
+        // BFS backwards from output node to collect ordered chain
+        const chain: string[] = [];
+        const visited = new Set<string>();
+        const queue: string[] = [outNode.id];
+
+        while (queue.length > 0) {
+          const cur = queue.shift()!;
+          if (visited.has(cur)) continue;
+          visited.add(cur);
+          const incoming = s.edges.filter((e) => e.targetId === cur);
+          for (const edge of incoming) {
+            chain.unshift(edge.sourceId);
+            queue.push(edge.sourceId);
+          }
+        }
+
+        if (chain.length === 0) {
+          newLogs.push(mkLog("warn", `[run:warn] "${outNode.label}" — 연결된 노드 없음`));
+          continue;
+        }
+
+        const labels = chain
+          .map((id) => s.nodes.find((n) => n.id === id)?.label ?? id)
+          .join(" → ");
+        newLogs.push(mkLog("success", `[run:output] ${labels} → ${outNode.label}`));
+      }
+
+      newLogs.push(mkLog("info", "[run:end] ── 실행 완료 ──"));
+      return { logs: [...s.logs, ...newLogs] };
+    }),
 
   setZoom: (zoom) =>
     set((s) => {

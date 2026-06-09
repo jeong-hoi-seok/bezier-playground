@@ -23,6 +23,8 @@ export function NoteNodeCard({
   onInputPortLeave,
   onDeleteRequest,
 }: Props) {
+  const isOutput = node.type === "output";
+
   return (
     <div
       data-node="true"
@@ -35,7 +37,7 @@ export function NoteNodeCard({
       }}
       onMouseDown={(e) => onMoveStart(e, node.id, node.x, node.y)}
     >
-      {/* input port — left, orange */}
+      {/* input port — left */}
       <div
         className="absolute -left-2 top-1/2 -translate-y-1/2 z-10"
         onMouseDown={(e) => e.stopPropagation()}
@@ -53,9 +55,17 @@ export function NoteNodeCard({
       </div>
 
       {/* card body */}
-      <div className="bg-zinc-800 border border-zinc-600 rounded-lg px-3 py-2 text-zinc-100 text-sm shadow-lg cursor-grab active:cursor-grabbing">
+      <div
+        className="border rounded-lg px-3 py-2 text-sm shadow-lg cursor-grab active:cursor-grabbing"
+        style={{
+          backgroundColor: isOutput ? "#1c1917" : "#27272a",
+          borderColor: isOutput ? "#78716c" : "#52525b",
+          color: isOutput ? "#d6d3d1" : "#f4f4f5",
+        }}
+      >
         <div className="flex items-center justify-between gap-3">
-          <span>{node.label}</span>
+          {isOutput && <span className="text-xs text-stone-500 mr-1">▶</span>}
+          <span className="flex-1">{node.label}</span>
           <button
             type="button"
             className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 transition-opacity leading-none shrink-0"
@@ -67,13 +77,15 @@ export function NoteNodeCard({
         </div>
       </div>
 
-      {/* output port — right, white */}
-      <div
-        className="absolute -right-2 top-1/2 -translate-y-1/2 z-10"
-        onMouseDown={(e) => { e.stopPropagation(); onOutputPortDown(e, node.id); }}
-      >
-        <div className="w-3 h-3 rounded-full bg-white border-2 border-zinc-400 hover:border-white hover:scale-125 transition-all cursor-crosshair" />
-      </div>
+      {/* output port — right (text node only) */}
+      {!isOutput && (
+        <div
+          className="absolute -right-2 top-1/2 -translate-y-1/2 z-10"
+          onMouseDown={(e) => { e.stopPropagation(); onOutputPortDown(e, node.id); }}
+        >
+          <div className="w-3 h-3 rounded-full bg-white border-2 border-zinc-400 hover:border-white hover:scale-125 transition-all cursor-crosshair" />
+        </div>
+      )}
     </div>
   );
 }
