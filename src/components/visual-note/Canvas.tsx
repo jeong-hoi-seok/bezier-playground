@@ -11,32 +11,58 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { NoteNodeCard } from "./NoteNodeCard";
 import { useVisualNoteStore } from "./store";
 
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 2;
 const ZOOM_SENSITIVITY = 0.001;
+const NODE_HALF_W = 80;
+
+interface PendingEdge {
+  sourceId: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+function edgePath(x1: number, y1: number, x2: number, y2: number) {
+  return `M ${x1} ${y1} L ${x2} ${y2}`;
+}
 
 export function Canvas() {
-  const { nodes, zoom, offset, moveNode, removeNode, setZoom, setOffset } =
+  const { nodes, edges, zoom, offset, moveNode, removeNode, addEdge, setZoom, setOffset } =
     useVisualNoteStore();
+
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [pendingEdge, setPendingEdge] = useState<PendingEdge | null>(null);
+  const [hoveredInputId, setHoveredInputId] = useState<string | null>(null);
+  const [spaceActive, setSpaceActive] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isPanning = useRef(false);
   const isSpaceDown = useRef(false);
+  const isDraggingEdge = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const offsetStart = useRef({ x: 0, y: 0 });
   const draggingNode = useRef<string | null>(null);
   const dragNodeStart = useRef({ mx: 0, my: 0, nx: 0, ny: 0 });
-  const [spaceActive, setSpaceActive] = useState(false);
 
   const zoomRef = useRef(zoom);
   const offsetRef = useRef(offset);
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
   useEffect(() => { offsetRef.current = offset; }, [offset]);
 
-  // spacebar tracking
+  const screenToCanvas = useCallback((sx: number, sy: number) => {
+    const rect = containerRef.current!.getBoundingClientRect();
+    return {
+      x: (sx - rect.left - offsetRef.current.x) / zoomRef.current,
+      y: (sy - rect.top - offsetRef.current.y) / zoomRef.current,
+    };
+  }, []);
+
+  // spacebar
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
@@ -60,7 +86,7 @@ export function Canvas() {
     };
   }, []);
 
-  // non-passive wheel: prevents browser pinch-zoom takeover
+  // non-passive wheel
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -101,6 +127,11 @@ export function Canvas() {
         setOffset(offsetStart.current.x + dx, offsetStart.current.y + dy);
         return;
       }
+      if (isDraggingEdge.current) {
+        const c = screenToCanvas(e.clientX, e.clientY);
+        setPendingEdge((prev) => prev ? { ...prev, x2: c.x, y2: c.y } : null);
+        return;
+      }
       if (draggingNode.current) {
         const dx = e.clientX - dragNodeStart.current.mx;
         const dy = e.clientY - dragNodeStart.current.my;
@@ -111,22 +142,52 @@ export function Canvas() {
         );
       }
     },
-    [zoom, setOffset, moveNode],
+    [zoom, setOffset, moveNode, screenToCanvas],
   );
 
   const onMouseUp = useCallback(() => {
     isPanning.current = false;
     draggingNode.current = null;
+    if (isDraggingEdge.current) {
+      isDraggingEdge.current = false;
+      setPendingEdge(null);
+      setHoveredInputId(null);
+    }
   }, []);
 
-  const onNodeMouseDown = useCallback(
+  const onNodeMoveStart = useCallback(
     (e: React.MouseEvent, id: string, nx: number, ny: number) => {
-      if (isSpaceDown.current) return;
+      if (isSpaceDown.current || isDraggingEdge.current) return;
       e.stopPropagation();
       draggingNode.current = id;
       dragNodeStart.current = { mx: e.clientX, my: e.clientY, nx, ny };
     },
     [],
+  );
+
+  const onOutputPortDown = useCallback(
+    (e: React.MouseEvent, nodeId: string) => {
+      e.stopPropagation();
+      const node = useVisualNoteStore.getState().nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      const x1 = node.x + NODE_HALF_W;
+      const y1 = node.y;
+      const c = screenToCanvas(e.clientX, e.clientY);
+      isDraggingEdge.current = true;
+      setPendingEdge({ sourceId: nodeId, x1, y1, x2: c.x, y2: c.y });
+    },
+    [screenToCanvas],
+  );
+
+  const onInputPortUp = useCallback(
+    (_e: React.MouseEvent, nodeId: string) => {
+      if (!isDraggingEdge.current || !pendingEdge) return;
+      addEdge(pendingEdge.sourceId, nodeId);
+      isDraggingEdge.current = false;
+      setPendingEdge(null);
+      setHoveredInputId(null);
+    },
+    [pendingEdge, addEdge],
   );
 
   const gridSize = 40 * zoom;
@@ -175,30 +236,53 @@ export function Canvas() {
       {/* canvas layer */}
       <div
         className="absolute top-0 left-0 origin-top-left"
-        style={{
-          transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
-        }}
+        style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
       >
+        {/* edges */}
+        <svg
+          overflow="visible"
+          className="absolute pointer-events-none"
+          style={{ left: 0, top: 0, width: 1, height: 1 }}
+        >
+          {edges.map((edge) => {
+            const src = nodes.find((n) => n.id === edge.sourceId);
+            const tgt = nodes.find((n) => n.id === edge.targetId);
+            if (!src || !tgt) return null;
+            return (
+              <path
+                key={edge.id}
+                d={edgePath(src.x + NODE_HALF_W, src.y, tgt.x - NODE_HALF_W, tgt.y)}
+                fill="none"
+                stroke="#ffffff"
+                strokeWidth={1.5}
+              />
+            );
+          })}
+
+          {/* pending edge while dragging */}
+          {pendingEdge && (
+            <path
+              d={edgePath(pendingEdge.x1, pendingEdge.y1, pendingEdge.x2, pendingEdge.y2)}
+              fill="none"
+              stroke="#ffffff"
+              strokeWidth={1.5}
+            />
+          )}
+        </svg>
+
+        {/* nodes */}
         {nodes.map((node) => (
-          <div
+          <NoteNodeCard
             key={node.id}
-            data-node="true"
-            className="absolute bg-zinc-800 border border-zinc-600 rounded-lg px-3 py-2 text-zinc-100 text-sm shadow-lg cursor-grab active:cursor-grabbing min-w-[120px] group"
-            style={{ left: node.x, top: node.y, transform: "translate(-50%, -50%)" }}
-            onMouseDown={(e) => onNodeMouseDown(e, node.id, node.x, node.y)}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <span>{node.label}</span>
-              <button
-                type="button"
-                className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 transition-opacity leading-none"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); setPendingDeleteId(node.id); }}
-              >
-                ×
-              </button>
-            </div>
-          </div>
+            node={node}
+            isInputHovered={hoveredInputId === node.id}
+            onMoveStart={onNodeMoveStart}
+            onOutputPortDown={onOutputPortDown}
+            onInputPortUp={onInputPortUp}
+            onInputPortEnter={(id) => isDraggingEdge.current && setHoveredInputId(id)}
+            onInputPortLeave={() => setHoveredInputId(null)}
+            onDeleteRequest={setPendingDeleteId}
+          />
         ))}
       </div>
 

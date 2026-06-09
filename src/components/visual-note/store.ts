@@ -12,6 +12,12 @@ export interface NoteNode {
   label: string;
 }
 
+export interface Edge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+}
+
 export type LogLevel = "info" | "warn" | "success";
 
 export interface LogEntry {
@@ -23,17 +29,21 @@ export interface LogEntry {
 
 interface VisualNoteStore {
   nodes: NoteNode[];
+  edges: Edge[];
   zoom: number;
   offset: { x: number; y: number };
   logs: LogEntry[];
   addNode: (x: number, y: number) => void;
   moveNode: (id: string, x: number, y: number) => void;
   removeNode: (id: string) => void;
+  addEdge: (sourceId: string, targetId: string) => void;
+  removeEdge: (id: string) => void;
   setZoom: (zoom: number) => void;
   setOffset: (x: number, y: number) => void;
 }
 
 let idCounter = 0;
+let edgeCounter = 0;
 let logCounter = 0;
 let lastZoomLog = 0;
 
@@ -43,6 +53,7 @@ function mkLog(level: LogLevel, message: string): LogEntry {
 
 export const useVisualNoteStore = create<VisualNoteStore>((set) => ({
   nodes: [],
+  edges: [],
   zoom: 1,
   offset: { x: 0, y: 0 },
   logs: [],
@@ -67,9 +78,29 @@ export const useVisualNoteStore = create<VisualNoteStore>((set) => ({
       const node = s.nodes.find((n) => n.id === id);
       return {
         nodes: s.nodes.filter((n) => n.id !== id),
+        edges: s.edges.filter((e) => e.sourceId !== id && e.targetId !== id),
         logs: [...s.logs, mkLog("warn", `[node:removed] id=${id} label="${node?.label}"`)],
       };
     }),
+
+  addEdge: (sourceId, targetId) =>
+    set((s) => {
+      const duplicate = s.edges.some(
+        (e) => e.sourceId === sourceId && e.targetId === targetId,
+      );
+      if (duplicate || sourceId === targetId) return s;
+      const id = `edge-${++edgeCounter}`;
+      return {
+        edges: [...s.edges, { id, sourceId, targetId }],
+        logs: [...s.logs, mkLog("success", `[edge:connected] ${sourceId} → ${targetId}`)],
+      };
+    }),
+
+  removeEdge: (id) =>
+    set((s) => ({
+      edges: s.edges.filter((e) => e.id !== id),
+      logs: [...s.logs, mkLog("warn", `[edge:removed] id=${id}`)],
+    })),
 
   setZoom: (zoom) =>
     set((s) => {
