@@ -1,46 +1,81 @@
 "use client";
 
 import { create } from "zustand";
-
-export type NodeType = "text" | "output";
+import {
+	defaultParams,
+	NODE_DEFS,
+	type NodeKind,
+	type ParamValue,
+} from "./nodeDefs";
 
 export interface NoteNode {
-  id: string;
-  type: NodeType;
-  x: number;
-  y: number;
-  label: string;
+	id: string;
+	kind: NodeKind;
+	x: number;
+	y: number;
+	label: string;
+	params: Record<string, ParamValue>;
 }
 
 export interface Edge {
-  id: string;
-  sourceId: string;
-  targetId: string;
+	id: string;
+	sourceId: string;
+	targetId: string;
 }
 
 export type LogLevel = "info" | "warn" | "success";
 
 export interface LogEntry {
-  id: number;
-  ts: number;
-  level: LogLevel;
-  message: string;
+	id: number;
+	ts: number;
+	level: LogLevel;
+	message: string;
+}
+
+export interface SceneMotion {
+	kind: "run" | "jump";
+	speed: number;
+	repeat: number;
+}
+
+export interface SceneEffect {
+	kind: "grass";
+	intensity: number;
+	tint: string;
+}
+
+export interface ScenePerformer {
+	id: string;
+	image: string;
+	size: number;
+	motions: SceneMotion[];
+	effects: SceneEffect[];
+}
+
+export interface PreviewState {
+	open: boolean;
+	performers: ScenePerformer[];
 }
 
 interface VisualNoteStore {
-  nodes: NoteNode[];
-  edges: Edge[];
-  zoom: number;
-  offset: { x: number; y: number };
-  logs: LogEntry[];
-  addNode: (x: number, y: number, type?: NodeType) => void;
-  moveNode: (id: string, x: number, y: number) => void;
-  removeNode: (id: string) => void;
-  addEdge: (sourceId: string, targetId: string) => void;
-  removeEdge: (id: string) => void;
-  runGraph: () => void;
-  setZoom: (zoom: number) => void;
-  setOffset: (x: number, y: number) => void;
+	nodes: NoteNode[];
+	edges: Edge[];
+	zoom: number;
+	offset: { x: number; y: number };
+	logs: LogEntry[];
+	selectedId: string | null;
+	preview: PreviewState;
+	addNode: (x: number, y: number, kind?: NodeKind) => void;
+	moveNode: (id: string, x: number, y: number) => void;
+	removeNode: (id: string) => void;
+	selectNode: (id: string | null) => void;
+	updateNodeParam: (id: string, key: string, value: ParamValue) => void;
+	addEdge: (sourceId: string, targetId: string) => void;
+	removeEdge: (id: string) => void;
+	runGraph: () => void;
+	closePreview: () => void;
+	setZoom: (zoom: number) => void;
+	setOffset: (x: number, y: number) => void;
 }
 
 let idCounter = 0;
@@ -49,114 +84,222 @@ let logCounter = 0;
 let lastZoomLog = 0;
 
 function mkLog(level: LogLevel, message: string): LogEntry {
-  return { id: ++logCounter, ts: Date.now(), level, message };
+	return { id: ++logCounter, ts: Date.now(), level, message };
+}
+
+function num(value: ParamValue | undefined, fallback: number): number {
+	const n = typeof value === "string" ? Number.parseFloat(value) : value;
+	return typeof n === "number" && Number.isFinite(n) ? n : fallback;
+}
+
+function str(value: ParamValue | undefined, fallback: string): string {
+	return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
 export const useVisualNoteStore = create<VisualNoteStore>((set) => ({
-  nodes: [],
-  edges: [],
-  zoom: 1,
-  offset: { x: 0, y: 0 },
-  logs: [],
+	nodes: [],
+	edges: [],
+	zoom: 1,
+	offset: { x: 0, y: 0 },
+	logs: [],
+	selectedId: null,
+	preview: { open: false, performers: [] },
 
-  addNode: (x, y, type = "text") =>
-    set((s) => {
-      const id = `node-${++idCounter}`;
-      const label = type === "output" ? `Output ${idCounter}` : `Note ${idCounter}`;
-      return {
-        nodes: [...s.nodes, { id, type, x, y, label }],
-        logs: [...s.logs, mkLog("success", `[node:added] id=${id} type=${type} label="${label}" x=${Math.round(x)} y=${Math.round(y)}`)],
-      };
-    }),
+	addNode: (x, y, kind = "character") =>
+		set((s) => {
+			const id = `node-${++idCounter}`;
+			const label = `${NODE_DEFS[kind].label} ${idCounter}`;
+			return {
+				nodes: [
+					...s.nodes,
+					{ id, kind, x, y, label, params: defaultParams(kind) },
+				],
+				logs: [
+					...s.logs,
+					mkLog(
+						"success",
+						`[node:added] id=${id} kind=${kind} label="${label}" x=${Math.round(x)} y=${Math.round(y)}`,
+					),
+				],
+			};
+		}),
 
-  moveNode: (id, x, y) =>
-    set((s) => ({
-      nodes: s.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)),
-    })),
+	moveNode: (id, x, y) =>
+		set((s) => ({
+			nodes: s.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)),
+		})),
 
-  removeNode: (id) =>
-    set((s) => {
-      const node = s.nodes.find((n) => n.id === id);
-      return {
-        nodes: s.nodes.filter((n) => n.id !== id),
-        edges: s.edges.filter((e) => e.sourceId !== id && e.targetId !== id),
-        logs: [...s.logs, mkLog("warn", `[node:removed] id=${id} label="${node?.label}"`)],
-      };
-    }),
+	removeNode: (id) =>
+		set((s) => {
+			const node = s.nodes.find((n) => n.id === id);
+			return {
+				nodes: s.nodes.filter((n) => n.id !== id),
+				edges: s.edges.filter((e) => e.sourceId !== id && e.targetId !== id),
+				selectedId: s.selectedId === id ? null : s.selectedId,
+				logs: [
+					...s.logs,
+					mkLog("warn", `[node:removed] id=${id} label="${node?.label}"`),
+				],
+			};
+		}),
 
-  addEdge: (sourceId, targetId) =>
-    set((s) => {
-      const duplicate = s.edges.some(
-        (e) => e.sourceId === sourceId && e.targetId === targetId,
-      );
-      if (duplicate || sourceId === targetId) return s;
-      const id = `edge-${++edgeCounter}`;
-      return {
-        edges: [...s.edges, { id, sourceId, targetId }],
-        logs: [...s.logs, mkLog("success", `[edge:connected] ${sourceId} → ${targetId}`)],
-      };
-    }),
+	selectNode: (id) => set({ selectedId: id }),
 
-  removeEdge: (id) =>
-    set((s) => ({
-      edges: s.edges.filter((e) => e.id !== id),
-      logs: [...s.logs, mkLog("warn", `[edge:removed] id=${id}`)],
-    })),
+	updateNodeParam: (id, key, value) =>
+		set((s) => ({
+			nodes: s.nodes.map((n) =>
+				n.id === id ? { ...n, params: { ...n.params, [key]: value } } : n,
+			),
+		})),
 
-  runGraph: () =>
-    set((s) => {
-      const newLogs: LogEntry[] = [mkLog("info", "[run:start] ── 실행 시작 ──")];
+	addEdge: (sourceId, targetId) =>
+		set((s) => {
+			const duplicate = s.edges.some(
+				(e) => e.sourceId === sourceId && e.targetId === targetId,
+			);
+			if (duplicate || sourceId === targetId) return s;
+			const id = `edge-${++edgeCounter}`;
+			return {
+				edges: [...s.edges, { id, sourceId, targetId }],
+				logs: [
+					...s.logs,
+					mkLog("success", `[edge:connected] ${sourceId} → ${targetId}`),
+				],
+			};
+		}),
 
-      const outputNodes = s.nodes.filter((n) => n.type === "output");
-      if (outputNodes.length === 0) {
-        newLogs.push(mkLog("warn", "[run:error] 출력 노드가 없습니다. Output 노드를 추가하세요."));
-        return { logs: [...s.logs, ...newLogs] };
-      }
+	removeEdge: (id) =>
+		set((s) => ({
+			edges: s.edges.filter((e) => e.id !== id),
+			logs: [...s.logs, mkLog("warn", `[edge:removed] id=${id}`)],
+		})),
 
-      for (const outNode of outputNodes) {
-        // BFS backwards from output node to collect ordered chain
-        const chain: string[] = [];
-        const visited = new Set<string>();
-        const queue: string[] = [outNode.id];
+	runGraph: () =>
+		set((s) => {
+			const newLogs: LogEntry[] = [
+				mkLog("info", "[run:start] ── 실행 시작 ──"),
+			];
 
-        while (queue.length > 0) {
-          const cur = queue.shift()!;
-          if (visited.has(cur)) continue;
-          visited.add(cur);
-          const incoming = s.edges.filter((e) => e.targetId === cur);
-          for (const edge of incoming) {
-            chain.unshift(edge.sourceId);
-            queue.push(edge.sourceId);
-          }
-        }
+			const outputNodes = s.nodes.filter((n) => n.kind === "output");
+			if (outputNodes.length === 0) {
+				newLogs.push(
+					mkLog(
+						"warn",
+						"[run:error] 출력 노드가 없습니다. 출력 노드를 추가하세요.",
+					),
+				);
+				return { logs: [...s.logs, ...newLogs] };
+			}
 
-        if (chain.length === 0) {
-          newLogs.push(mkLog("warn", `[run:warn] "${outNode.label}" — 연결된 노드 없음`));
-          continue;
-        }
+			const performers: ScenePerformer[] = [];
 
-        const labels = chain
-          .map((id) => s.nodes.find((n) => n.id === id)?.label ?? id)
-          .join(" → ");
-        newLogs.push(mkLog("success", `[run:output] ${labels} → ${outNode.label}`));
-      }
+			for (const outNode of outputNodes) {
+				// BFS backwards from output node to collect connected nodes
+				const visited = new Set<string>();
+				const queue: string[] = [outNode.id];
+				const connected: string[] = [];
 
-      newLogs.push(mkLog("info", "[run:end] ── 실행 완료 ──"));
-      return { logs: [...s.logs, ...newLogs] };
-    }),
+				while (queue.length > 0) {
+					const cur = queue.shift();
+					if (!cur || visited.has(cur)) continue;
+					visited.add(cur);
+					if (cur !== outNode.id) connected.push(cur);
+					const incoming = s.edges.filter((e) => e.targetId === cur);
+					for (const edge of incoming) queue.push(edge.sourceId);
+				}
 
-  setZoom: (zoom) =>
-    set((s) => {
-      const now = Date.now();
-      const shouldLog = now - lastZoomLog > 300;
-      if (shouldLog) lastZoomLog = now;
-      return {
-        zoom,
-        logs: shouldLog
-          ? [...s.logs, mkLog("info", `[canvas:zoom] ${Math.round(zoom * 100)}%`)]
-          : s.logs,
-      };
-    }),
+				if (connected.length === 0) {
+					newLogs.push(
+						mkLog("warn", `[run:warn] "${outNode.label}" — 연결된 노드 없음`),
+					);
+					continue;
+				}
 
-  setOffset: (x, y) => set({ offset: { x, y } }),
+				const connectedNodes = connected
+					.map((id) => s.nodes.find((n) => n.id === id))
+					.filter((n): n is NoteNode => Boolean(n));
+
+				const characters = connectedNodes.filter((n) => n.kind === "character");
+				const motions: SceneMotion[] = connectedNodes
+					.filter((n) => n.kind === "run" || n.kind === "jump")
+					.map((n) => ({
+						kind: n.kind as "run" | "jump",
+						speed: num(n.params.speed, 5),
+						repeat: num(n.params.repeat, 2),
+					}));
+				const effectsByKind = new Map<SceneEffect["kind"], SceneEffect>();
+				for (const n of connectedNodes) {
+					if (n.kind !== "grass") continue;
+					const effect: SceneEffect = {
+						kind: n.kind,
+						intensity: num(n.params.intensity, 50),
+						tint: str(n.params.tint, "#ffffff"),
+					};
+					const existing = effectsByKind.get(effect.kind);
+					if (!existing || effect.intensity > existing.intensity) {
+						effectsByKind.set(effect.kind, effect);
+					}
+				}
+				const effects: SceneEffect[] = [...effectsByKind.values()];
+
+				if (characters.length === 0) {
+					newLogs.push(
+						mkLog("warn", `[run:warn] "${outNode.label}" — 캐릭터 노드 없음`),
+					);
+					continue;
+				}
+
+				for (const character of characters) {
+					performers.push({
+						id: `${outNode.id}:${character.id}`,
+						image: NODE_DEFS[character.kind].image ?? "",
+						size: num(character.params.size, 1),
+						motions,
+						effects,
+					});
+				}
+
+				const motionLabels =
+					motions.map((m) => NODE_DEFS[m.kind].label).join(", ") || "대기";
+				const effectLabels =
+					effects.map((e) => NODE_DEFS[e.kind].label).join(", ") || "없음";
+				newLogs.push(
+					mkLog(
+						"success",
+						`[run:output] ${outNode.label} ← 캐릭터 ${characters.length} · 행동(${motionLabels}) · 엘리멘탈(${effectLabels})`,
+					),
+				);
+			}
+
+			newLogs.push(mkLog("info", "[run:end] ── 실행 완료 ──"));
+
+			if (performers.length === 0) {
+				return { logs: [...s.logs, ...newLogs] };
+			}
+
+			return {
+				logs: [...s.logs, ...newLogs],
+				preview: { open: true, performers },
+			};
+		}),
+
+	closePreview: () => set((s) => ({ preview: { ...s.preview, open: false } })),
+
+	setZoom: (zoom) =>
+		set((s) => {
+			const now = Date.now();
+			const shouldLog = now - lastZoomLog > 300;
+			if (shouldLog) lastZoomLog = now;
+			return {
+				zoom,
+				logs: shouldLog
+					? [
+							...s.logs,
+							mkLog("info", `[canvas:zoom] ${Math.round(zoom * 100)}%`),
+						]
+					: s.logs,
+			};
+		}),
+
+	setOffset: (x, y) => set({ offset: { x, y } }),
 }));
